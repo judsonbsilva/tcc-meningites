@@ -1,0 +1,214 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Esse é um estudo piloto sobre a parte de imunizações (usando dados do PNI)
+Os dados foram obtidos em ftp://ftp.datasus.gov.br/dissemin/publicos/
+O significado da coluna IMUNO está descrito no código:
+
+## Cobertura vacinal
+
+O objetivo aqui é pegar os dados de 2007 a 2019 (período estipulado na minha pesquisa)
+de cobertura vacinal anual para cada imunizante em cada município do piauí com os 
+imunizantes de interesse.
+
+> Observação
+> Em cada um dos bancos será criado o campo "ID" contendo o código
+> do IBGE do município e o ano (isso servirá para juntar as informações)
+> mais pra frente
+
+
+```{r}
+library(foreign)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(read.dbc)
+library(ggplot2)
+
+setwd("/home/judson/Nuvem/Cientifico/meningites piaui/conducao/")
+
+# Lista dos imunizantes de interesse
+imunizantes = c('053','080','012', '006', '072')
+#COD: NOME DO IMUNIZANTE
+#072: BCG
+#053: Meningococo C
+#080: Pentavalente
+#006: Tetravalente
+#012: Pneumococica
+
+# Essas últimas foram excluídas porque não tinha nenhum registro nos bancos
+#091: Pneumococica(1 ref)
+#092: Meningococo C (1 ref)
+#009: Haemophilus influenzae b
+
+
+load_dbfs = function(dirname){
+  files = list.files(dirname)
+  data = data.frame()
+  lines_number = 0
+  
+  for(file in files){
+    
+    temp = foreign::read.dbf(paste(dirname, file, sep=''))
+    print(paste(file, 'ok.', as.character(nrow(temp))))
+    # Alguns DBFs tem uma coluna a mais chamada FX_ETARIA
+    # com valores que indicam se a população da linha
+    # faz parte do grupo alvo (50) ou outros grupos.
+    # Por isso é importante filtrar essa info.
+    if('FX_ETARIA' %in% colnames(temp)){
+      temp = temp %>% filter(FX_ETARIA == '50')
+    }
+    temp = select(temp, ANO, MUNIC, IMUNO, QT_DOSE, POP, COBERT)
+    data = rbind(data, temp)
+    lines_number = lines_number + nrow(temp)
+  }
+  if(lines_number != nrow(data)){
+    rlang::abort("Erro ao carregar dados")
+  }
+  print("Dados carregados com sucesso.")
+  print(paste("Total de", lines_number, "casos"))
+  
+  return(data)
+}
+dado.bruto.pni = load_dbfs('./dados/PNI/CP/') %>%
+  mutate(ANO = as.numeric(ANO)) %>%
+  filter(ANO > 2006 & ANO < 2020) %>%
+  filter(IMUNO %in% imunizantes) %>%
+  mutate(
+    COD_MUNIC = factor(substr(MUNIC, 0, 6)),
+    ID = paste(COD_MUNIC, ANO, sep="|"),
+    COBERT = as.numeric(gsub(",", ".", COBERT))
+  )
+```
+## População por município
+
+Agora é hora de pegar a população de cada município em cada ano
+para conseguir calcular a incidência anual de meningites por município
+(que necessita da popualação)
+
+Incidência(ano) = número de casos de meningite (nesse ano) / população (nesse ano)
+
+```{r}
+
+# Pega o CSV com dados de população dos municípios do PI (IBGE/MS)
+populacao.municipios <- read.csv(
+    './dados/populacao_municipios_pi.csv',
+    header=TRUE,
+    sep=';',
+    encoding='UTF-8',
+  ) %>%
+  as_tibble() %>%
+  pivot_longer(!MUNICIPIO, names_to = "ANO", values_to = "POPULACAO") %>%
+  mutate(
+    COD_MUNIC = factor(substr(MUNICIPIO, 0, 6)),
+    NOME_MUNIC = str_sub(MUNICIPIO, start=8),
+    ANO = as.numeric(str_sub(ANO, start=2)),
+    POPULACAO = as.numeric(POPULACAO),
+    ID = paste(COD_MUNIC, ANO, sep="|")
+  ) %>%
+  select(ID, COD_MUNIC, NOME_MUNIC, ANO, POPULACAO)
+  
+```
+## Casos por município
+
+Aqui eu pego os arquivos do SINAN de meningites (esse não está disponível do FTP do DATASUS,
+mas sim na Secretaria de Saúde do Estado do Piauí por conter alguns campos adicionais, além daqueles disponibilizados no TABNET). Para obter esses dados é necessário a submissão e a provação da pesquisa por um CEP (Comitê de Ética em Pesquisa).
+
+```{r}
+load_dbc <- function(dirname, filename){
+  temp <- read.dbc(paste(dirname, filename, sep=''))
+  print(paste(filename, 'ok.', as.character(nrow(temp))))
+  return(temp)
+}
+
+dado.bruto.casos <- load_dbc('./dados/', 'MENINNET.dbc')
+View(dado.bruto.casos)
+# Nessa etapa, fazemos um ajuste em alguns dados importantes dos casos
+# de meningites. Filtramos pelo ano (2007 a 2019), se o caso foi confirmado
+# e se os campos sexo e evolução foram preenchidos. Os casos foram
+# agrupados assim: número de casos confirmados por município por ano
+
+
+
+faixa.etaria <- c(
+  'Abaixo de 1 ano',
+  'De 1 e 4 anos',
+  'De 5 a 14 anos',
+  'De 15 a 19 anos',
+  'De 20 a 39 anos',
+  'De 40 a 59 anos',
+  '60 anos ou mais'
+)
+
+idade.classifier <- function(idade){
+  case_when(
+   idade < 1 ~ '1',
+   idade >= 1 & idade < 5 ~ '2',
+   idade >= 5 & idade < 15 ~ '3',
+   idade >= 15 & idade < 20 ~ '4',
+   idade >= 20 & idade < 40 ~ '5',
+   idade >= 40 & idade < 60 ~ '6',
+   idade >= 60 ~ '7',
+   is.na(idade) ~ '8'
+  )
+}
+
+
+
+dado.casos = dado.bruto.casos %>%
+  mutate(ANO = as.numeric(format(DT_NOTIFIC, "%Y"))) %>%
+  filter(ANO >= 2007 & ANO < 2020) %>%
+  filter(
+    CLASSI_FIN %in% c('1', '2') &
+    EVOLUCAO %in% c('1','2', '3') &
+    CS_SEXO %in% c('M', 'F')
+  ) %>%
+  filter(CLASSI_FIN == "1") %>%
+  mutate(
+    COD_MUNIC = ID_MN_RESI,
+    IDADE = round(as.numeric(DT_SIN_PRI - DT_NASC) / 365.242199, 1),
+    FAIXA_ETARIA = factor(idade.classifier(IDADE))
+  ) %>%
+  select(NU_NOTIFIC, COD_MUNIC, ANO, IDADE, FAIXA_ETARIA) %>%
+  filter(FAIXA_ETARIA %in% c('1', '2','3')) %>%
+  group_by(COD_MUNIC, ANO) %>%
+  summarise(CASOS = n()) %>%
+  mutate(ID = paste(COD_MUNIC, ANO, sep="|"))
+
+```
+
+## Juntando os dados
+
+Nessa etapa, o objetivo é juntar as informações de população/município/ano, casos de meningite/município/ano e cobertura vacinal/município/ano num dataframe único.
+Para isso, vou escolher a vacina Pneumocócica como cobaia.
+Para fazer um "match" das linhas vou usar o campo "ID" criado lá em cima
+
+```{r}
+
+dado.pneumo = dado.bruto.pni %>% filter(IMUNO == '053')
+dados.geral = left_join(populacao.municipios, dado.casos, by="ID")
+dados.geral = left_join(dados.geral, dado.pneumo, by="ID")
+
+dados.geral = dados.geral %>%
+  select(COD_MUNIC.x, ANO.x, NOME_MUNIC, POPULACAO, CASOS, COBERT) %>%
+  mutate(
+    COD_MUNIC = COD_MUNIC.x,
+    ANO = ANO.x
+  ) %>%
+  # Aqui é importante preencher os campos "casos" que não tem valor
+  # pois quando nenhum caso foi notificado naquele município, 
+  # entende-se que não houve caso
+  replace_na(list(CASOS = 0)) %>%
+  select(COD_MUNIC, ANO, NOME_MUNIC, POPULACAO, CASOS, COBERT)
+  
+dados.geral = dados.geral %>%
+  mutate(INCIDENCIA=CASOS * 100000/POPULACAO) %>%
+  filter(!is.na(COBERT))
+  
+ggplot(dados.geral, aes(y=INCIDENCIA, x=COBERT)) + 
+  geom_point()
+
+```
+

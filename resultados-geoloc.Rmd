@@ -1,0 +1,814 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+Estes são os pacotes utilizados no projeto
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# 
+library(dplyr)
+library(tidyr)
+library(tmap)
+library(sf)
+library(knitr)
+library(viridis)
+library(stringr)
+library(ggplot2)
+#library(kable)
+```
+
+
+## Pega os dados do banco
+
+```{r pega.dados}
+raw_data <- read.csv(
+  './banco_meningites.csv',
+  header=TRUE,
+  encoding='UTF-8'
+)
+
+main_data <- raw_data %>%
+  # Filtra somente os casos confirmados ('1' = confirmado)
+  filter(CLASSI_FIN == '1')
+
+```
+
+## Incidência anual e cobertura vacinal
+
+```{r incidencia}
+
+# População nos anos de 2007 a 2019
+populacao.piaui = c(3130768, 3153248, 3173620, 3192643, 3203635, 3213393, 3221407, 3229320, 3238459, 3246999, 3255400, 3264531, 3273227)
+
+casos.por.ano = main_data %>%
+  rename(ano = ANO_NOTIF) %>%
+  group_by(ano) %>%
+  summarise(casos = n()) %>%
+  mutate(populacao = populacao.piaui) %>%
+  mutate(incidencia = round(casos * 100000/populacao, 2))
+
+taxa <- 40/100
+
+vir_colors <- viridis(5)
+
+calc.hib <- function(tetra, penta){
+  pmin(tetra, penta) + abs(tetra-penta)
+}
+
+imunizacoes <- read.csv('./dados/cobertura_vacinal.csv',
+  header=TRUE,
+  sep=';',
+  encoding='UTF-8'
+  ) %>%
+  mutate(
+    menin = as.numeric(menin) * taxa,
+    pneumo = as.numeric(pneumo) * taxa,
+    penta = as.numeric(penta) * taxa,
+    tetra = as.numeric(tetra) * taxa,
+    bcg = as.numeric(bcg) * taxa,
+    hib = pmax(tetra, penta),
+    ano = as.numeric(ano)
+  ) %>%
+  select(menin, pneumo, penta, tetra, hib, bcg, ano)
+
+View(imunizacoes)
+
+dados.para.plotar = left_join(x = casos.por.ano, y = imunizacoes, by = 'ano')
+
+label.percent <- function(label){
+  paste(label, '%', sep='')
+}
+
+plot.labels <- c(
+  'a' = 'Meningocócica-C conjugada',
+  'b' = 'Pneumocócica-10-valente',
+  'c' = 'Pentavalente (DTP/Hib/HBV)',
+  'd' = 'Tetravalente (DTP/Hib)',
+  'e' = 'Hib (tetra e pentavalente)',
+  'f' = 'BCG (tuberculose)'
+)
+plot.colors <- c(
+  'a' = vir_colors[5],
+  'b' = vir_colors[1],
+  'c' = vir_colors[3],
+  'd' = vir_colors[4],
+  'e' = vir_colors[4],
+  'f' = vir_colors[2]
+)
+
+View(dados.para.plotar)
+
+ggplot(dados.para.plotar) +
+  geom_line(aes(x=ano, y = menin, color='a'), size=1, alpha=0.8) +
+  geom_point(aes(x=ano, y = menin, color='a')) +
+  geom_line(aes(x=ano, y = pneumo, color='b'), size=1, alpha=0.8) +
+  geom_point(aes(x=ano, y = pneumo, color='b')) +
+  #geom_line(aes(x=ano, y = penta, color='c'), size=1.1, alpha=0.8) +
+  #geom_point(aes(x=ano, y = penta, color='c')) +
+  #geom_line(aes(x=ano, y = tetra, color='d'), size=1.1, alpha=0.8) +
+  #geom_point(aes(x=ano, y = tetra, color='d')) +
+  geom_line(aes(x=ano, y = bcg, color='f'), size=1, alpha=0.8) +
+  geom_point(aes(x=ano, y = bcg, color='f')) +
+  geom_line(aes(x=ano, y = hib, color='e'), size=1, alpha=0.8) +
+  geom_point(aes(x=ano, y = hib, color='e')) +
+  geom_bar(
+    aes(x=ano, weight=incidencia),
+    width = 0.3,
+    alpha = 1,
+    fill = vir_colors[2],
+    position='dodge'
+  ) + 
+  scale_y_continuous(
+    name="Taxa de Incidência / 100 mil habitantes",
+    n.breaks = 6,
+    sec.axis = sec_axis(~ ./taxa,
+      name = 'Taxa de Cobertura Vacinal',
+      labels = label.percent)
+  ) + 
+  scale_x_continuous(
+    name = "ano",
+    breaks = 2007:2019
+  ) +
+  theme(
+    panel.grid = element_line(colour = NA),
+    #panel.grid.minor.x = element_line(colour = NA),
+    panel.background = element_rect(fill = NA),
+    axis.line = element_line(colour = "black"),
+    legend.title=element_blank(),
+    legend.position = 'bottom'
+  ) +
+  labs(color = 'Vacinas') +
+  scale_color_manual(
+    values = plot.colors,
+    labels = plot.labels
+  ) +
+  guides(col=guide_legend(nrow=2,byrow=TRUE))
+
+
+#ggplot(vaccina, aes(ano, valor, color=info)) + 
+#  geom_line() + geom_point() + 
+#  scale_color_viridis(discrete=TRUE) + 
+#  geom_smooth(aes(ano, valor, color='Curva ajustada'))
+
+```
+
+
+## Mortalidade e letalidade
+
+
+```{r mortalidade}
+
+mortes.por.idade = main_data %>%
+  filter(EVOLUCAO == '2' & FAIXA.ETARIA != '8') %>%
+  group_by(ID_MN_RESI, ANO_NOTIF) %>%
+  summarise(mortes = n()) %>%
+  mutate(freq = round(100*mortes/sum(mortes), 2))
+
+View(mortes.por.idade)
+
+casos.por.faixa = main_data %>%
+  filter(FAIXA.ETARIA != '8') %>%
+  group_by(ANO_NOTIF, FAIXA.ETARIA) %>%
+  summarise(casos = n()) %>%
+  mutate(id = paste(ANO_NOTIF, FAIXA.ETARIA))
+
+letalidade.por.faixa = main_data %>%
+  filter(EVOLUCAO == '2' & FAIXA.ETARIA != '8') %>%
+  group_by(ANO_NOTIF, FAIXA.ETARIA) %>%
+  summarise(mortes = n()) %>%
+  mutate(id = paste(ANO_NOTIF, FAIXA.ETARIA)) %>%
+  select(id, mortes)
+
+letalidade.por.ano = left_join(
+    casos.por.faixa,
+    letalidade.por.faixa,
+    by='id'
+  ) %>%
+  mutate(letalidade = round(100*mortes/casos, 2)) %>%
+  select(ANO_NOTIF.x, FAIXA.ETARIA, casos, mortes, letalidade) %>%
+  replace_na(list('mortes' = 0, 'letalidade' = 0))
+
+
+View(letalidade.por.ano)
+
+letalidade.por.ano %>% 
+  ggplot(aes(x=ANO_NOTIF.x, y=letalidade, color=FAIXA.ETARIA)) +
+    geom_smooth(se=FALSE, span = 0.5) + 
+    #geom_point() + 
+    scale_color_manual(
+      name = "Faixa etária",
+      labels = faixa.etaria,
+      values = viridis(7, option='C')
+    ) + 
+  
+    scale_y_continuous(
+      name = "Taxa de Letalidade (%)"
+      #limits = c(0, 55)
+    ) +
+    scale_x_continuous(
+      name = "ano",
+      breaks = 2007:2019
+    ) +
+    theme(
+      panel.grid = element_line(colour = "#eeeeee"),
+      panel.grid.minor.x = element_line(colour = NA),
+      panel.background = element_rect(fill = NA),
+      axis.line = element_line(colour = "black"),
+      legend.title=element_blank(),
+      legend.position = 'bottom'
+    )
+
+#ggplot(mortes.por.idade, aes(x=ANO_NOTIF, y=mortes, fill=FAIXA.ETARIA)) +
+#  geom_bar(stat='identity', position='stack') +
+#  geom_text(aes(ANO_NOTIF, mortes + 3, label = mortes, fill = NULL), data = #letalidade.por.ano) +
+#  scale_y_continuous(
+#    name="Mortes por meningite",
+#    n.breaks = 7
+#  ) + 
+#  scale_x_continuous(
+#    name = "ano",
+#    breaks = 2007:2019
+#  ) +
+#  theme(
+#    panel.grid = element_line(colour = "#eeeeee"),
+#    panel.grid.minor.x = element_line(colour = NA),
+#    panel.background = element_rect(fill = NA),
+#    axis.line = element_line(colour = "black"),
+#    legend.title=element_blank(),
+#    legend.position = 'bottom'
+#  ) + 
+#  scale_fill_manual(
+#    name = "Faixa etária",
+#    labels = faixa.etaria,
+#    values = viridis(7, option='D')
+#  ) + 
+#  ggtitle("Faixa etária das mortes por meningites no Piauí entre 2007 e 2019")
+
+```
+
+
+## Distribuição por idade e faixa etária dos casos de meningites
+```{r faixa.etaria}
+
+casos.por.faixa = main_data %>%
+  rename(ano = ANO_NOTIF, faixa = FAIXA.ETARIA) %>%
+  filter(faixa != '8') %>%
+  group_by(ano, faixa) %>%
+  summarise(casos = n()) %>%
+  mutate(freq = casos/sum(casos))
+
+ggplot(casos.por.faixa, aes(x=ano, y=casos, fill=faixa)) + 
+  geom_bar(
+    stat='identity'
+  ) +
+  geom_text(aes(ano, casos + 50, label = casos, fill = NULL), data = casos.por.ano) + 
+  theme(
+    panel.grid = element_line(colour = "#eeeeee"),
+    panel.grid.minor.x = element_line(colour = NA),
+    panel.background = element_rect(fill = NA),
+    axis.line = element_line(colour = "black"),
+    legend.title=element_blank(),
+    legend.position = 'bottom'
+  ) + 
+  #scale_fill_viridis(discrete=T, option='D') +
+  scale_x_continuous(
+    name = "ano",
+    breaks = 2007:2019
+  ) + 
+  scale_y_continuous(
+    name = "Número de casos",
+    n.breaks = 6
+    #labels = label.percent(seq(0,100,20))
+  ) +
+  scale_fill_manual(
+    name = "Faixa etária",
+    labels = faixa.etaria,
+    values = viridis(7, option='D')
+  ) +
+  ggtitle("Faixa etária dos casos de meningites no Piauí entre 2007 e 2019")
+
+```
+
+## Histograma da idade
+
+```{r histograma.idade}
+histo.idade = select(main_data, IDADE, FAIXA.ETARIA) %>%
+  filter(!is.na(IDADE))
+
+ggplot(histo.idade, aes(IDADE, fill=FAIXA.ETARIA)) + 
+  geom_histogram(
+    binwidth = 1
+    #color='white'
+  ) + 
+  ggtitle("Casos de meningite no Piauí entre 2007 e 2019 por idade e faixa etária") +
+  theme_classic() + 
+  scale_y_continuous(
+    name = "Número de casos"
+  ) + 
+  scale_x_continuous(
+    name = "Idade",
+    #trans = "log2",
+    n.breaks = 20
+    #breaks = c(seq(0,10,2)/10, 5, seq(10,90,10))
+  ) +
+  scale_fill_manual(
+    name = "Faixa etária",
+    labels = faixa.etaria,
+    values = viridis(7, option='D')
+  )
+  #scale_fill_viridis(discrete=T, option='C')
+
+
+
+```
+
+```{r geoloc}
+
+# Pega o shapefile do piauí e adiciona coluna 'ID_MN_RESI'
+shp_pi <- st_read("./geoloc/ibge2013/22MUE250GC_SIR.shp")
+shp_pi <- shp_pi %>%
+    # Pega código dos municípios do IBGE sem o último dígito
+    mutate(ID_MN_RESI = factor(substr(CD_GEOCMU, 0, 6)), cod=ID_MN_RESI)
+
+# Lista de códigos dos municípios do Piauí
+municipios <- levels(shp_pi$ID_MN_RESI)
+
+casos.aloctones <- main_data %>%
+  filter(!ID_MN_RESI %in% municipios) %>%
+  group_by(NU_ANO) %>%
+  summarise(aloctones = n())
+
+kable(casos.aloctones, caption='Casos aloctones')
+
+casos.por.ano <- main_data %>%
+  rename(ano = ANO_NOTIF) %>%
+  # Se o município pertence ao PI agrupa pelo ano
+  filter(ID_MN_RESI %in% municipios) %>%
+  group_by(ano, ID_MN_RESI) %>%
+  # Conta o total de casos por município por ano
+  summarise(casos = n()) %>%
+  # Transtorma as linhas "ano" em colunas preenchidas com o total de casos/ano
+  spread(ano, casos) %>%
+  # Preenche as lacunas com zero
+  replace(is.na(.), 0) %>%
+  rename(
+    # Nº de casos
+    caso2007 = `2007`,
+    caso2008 = `2008`,
+    caso2009 = `2009`,
+    caso2010 = `2010`,
+    caso2011 = `2011`,
+    caso2012 = `2012`,
+    caso2013 = `2013`,
+    caso2014 = `2014`,
+    caso2015 = `2015`,
+    caso2016 = `2016`,
+    caso2017 = `2017`,
+    caso2018 = `2018`,
+    caso2019 = `2019`
+  )
+
+mortes.por.ano <- main_data %>%
+  rename(ano = ANO_NOTIF) %>%
+  filter(ID_MN_RESI %in% municipios) %>%
+  filter(EVOLUCAO == '2') %>%
+  group_by(ano, ID_MN_RESI) %>%
+  summarise(mortes = n()) %>%
+  spread(ano, mortes) %>%
+  replace(is.na(.), 0) %>%
+  rename(
+    morte2007 = `2007`,
+    morte2008 = `2008`,
+    morte2009 = `2009`,
+    morte2010 = `2010`,
+    morte2011 = `2011`,
+    morte2012 = `2012`,
+    morte2013 = `2013`,
+    morte2014 = `2014`,
+    morte2015 = `2015`,
+    morte2016 = `2016`,
+    morte2017 = `2017`,
+    morte2018 = `2018`,
+    morte2019 = `2019`
+  )
+
+View(mortes.por.ano)
+  
+#Incidence rates as the number of pertussis
+#confirmed (by any criteria) cases/population in a defined
+#municipality-state-whole country in a specific year X
+#10,000 inhabitants. 
+
+
+# Pega o CSV com dados de população dos municípios do PI (IBGE/MS)
+populacao.municipios <- read.csv(
+  './dados/populacao_municipios_pi.csv',
+  header=TRUE,
+  sep=';',
+  encoding='UTF-8',
+  ) %>%
+  # Código do município
+  mutate(ID_MN_RESI = factor(substr(MUNICIPIO, 0, 6))) %>%
+  # Nome do município
+  mutate(NOME_MN = str_sub(MUNICIPIO, start=8)) %>%
+  select(2:16) %>%
+  mutate(
+    # População em cada ano
+    popu2007 = as.numeric(X2007),
+    popu2008 = as.numeric(X2008),
+    popu2009 = as.numeric(X2009),
+    popu2010 = as.numeric(X2010),
+    popu2011 = as.numeric(X2011),
+    popu2012 = as.numeric(X2012),
+    popu2013 = as.numeric(X2013),
+    popu2014 = as.numeric(X2014),
+    popu2015 = as.numeric(X2015),
+    popu2016 = as.numeric(X2016),
+    popu2017 = as.numeric(X2017),
+    popu2018 = as.numeric(X2018),
+    popu2019 = as.numeric(X2019),
+  ) %>%
+  as_tibble()
+
+
+# Lista dos municípios com seus respectivos casos por ano
+incidencia <- left_join(
+    x=tibble(ID_MN_RESI = municipios),
+    y=casos.por.ano,
+    by='ID_MN_RESI'
+  ) %>%
+  # Preenche as lacunas com zero
+  replace(is.na(.), 0)
+
+incidencia <- left_join(
+    x=incidencia,
+    y=mortes.por.ano,
+    by='ID_MN_RESI'
+  ) %>%
+  # Preenche as lacunas com zero
+  replace(is.na(.), 0)
+
+# Junta os dados com o da populacao
+incidencia.por.municipio <- left_join(
+    x=incidencia,
+    y=populacao.municipios,
+    by='ID_MN_RESI'
+  ) %>% 
+  mutate(
+    # INCIDÊNCIA
+    i2007 = (caso2007 * 100000)/ popu2007,
+    i2008 = (caso2008 * 100000)/ popu2008,
+    i2009 = (caso2009 * 100000)/ popu2009,
+    i2010 = (caso2010 * 100000)/ popu2010,
+    i2011 = (caso2011 * 100000)/ popu2011,
+    i2012 = (caso2012 * 100000)/ popu2012,
+    i2013 = (caso2013 * 100000)/ popu2013,
+    i2014 = (caso2014 * 100000)/ popu2014,
+    i2015 = (caso2015 * 100000)/ popu2015,
+    i2016 = (caso2016 * 100000)/ popu2016,
+    i2017 = (caso2017 * 100000)/ popu2017,
+    i2018 = (caso2018 * 100000)/ popu2018,
+    i2019 = (caso2019 * 100000)/ popu2019,
+    # MORTALIDADE
+    m2007 = (morte2007 * 100000)/ popu2007,
+    m2008 = (morte2008 * 100000)/ popu2008,
+    m2009 = (morte2009 * 100000)/ popu2009,
+    m2010 = (morte2010 * 100000)/ popu2010,
+    m2011 = (morte2011 * 100000)/ popu2011,
+    m2012 = (morte2012 * 100000)/ popu2012,
+    m2013 = (morte2013 * 100000)/ popu2013,
+    m2014 = (morte2014 * 100000)/ popu2014,
+    m2015 = (morte2015 * 100000)/ popu2015,
+    m2016 = (morte2016 * 100000)/ popu2016,
+    m2017 = (morte2017 * 100000)/ popu2017,
+    m2018 = (morte2018 * 100000)/ popu2018,
+    m2019 = (morte2019 * 100000)/ popu2019
+  ) %>%
+  rowwise(ID_MN_RESI) %>%
+  mutate(
+    quadri1 = sum(c(caso2007, caso2008, caso2009, caso2010)),
+    quadri2 = sum(c(caso2011, caso2012, caso2013, caso2014)),
+    quadri3 = sum(c(caso2015, caso2016, caso2017, caso2018)),
+    incidencia.media1 = (quadri1 * 100000) / popu2010,
+    incidencia.media2 = (quadri2 * 100000) / popu2014,
+    incidencia.media3 = (quadri3 * 100000) / popu2018
+  )
+
+View(incidencia.por.municipio)
+
+# Junta os dados com os dados geográficos.
+geo_data <- left_join(
+    x=shp_pi,
+    y=select(incidencia.por.municipio, ID_MN_RESI, incidencia.media1, incidencia.media2, incidencia.media3),
+    by="ID_MN_RESI"
+  )
+##%>% replace_na(list('incidencia.media' = 0.000))
+#View(geo_data)
+
+# 0.208256   1.116441   1.880270  2
+# 14.564357  19.814408  21.055290  27.149164  20
+# 40.463471, 41.557140  44.367326 40
+# 66.867750  79.284950  80.513009 80
+# 148.005702 196.554910 160
+
+#kmeans(geo_data$incidencia.media3, 5)$centers
+quebras <- c(0, 2, 20, 40, 80, 140, Inf)
+txt <- c(
+  'abaixo de 2',
+  'de  2  a  20',
+  'de 20  a  40',
+  'de 40  a  80',
+  'de 80  a 140',
+  'acima de 140'
+)
+
+geo1 <- tm_shape(geo_data)+
+  tm_fill('incidencia.media1',
+    breaks = quebras,
+    labels = txt,
+    palette=rev(viridis(10)),
+    as.count = TRUE,
+    title="\n\n"
+  ) +
+  tm_borders(
+    col='black',
+    alpha=0.2
+  )+
+  tm_legend(
+    position=c("left","top"),
+    legend.format = list(
+    text.separator= 'a',
+    text.or.more = 'ou mais'
+    )
+  ) +
+  tm_layout(
+    title='2007 a 2010',
+    title.position = c('center', 'top'),
+    frame = FALSE
+  )
+
+geo2 <- tm_shape(geo_data)+
+  tm_fill('incidencia.media2',
+    breaks = quebras,
+    labels = txt,
+    palette=rev(viridis(10)),
+    as.count = TRUE,
+  ) +
+  tm_borders(
+    col='black',
+    alpha=0.2
+  )+
+  tm_layout(
+    title='2011 a 2014',
+    title.position = c('center', 'top'),
+    frame = FALSE,
+    legend.show = FALSE
+  )
+
+
+geo3 <- tm_shape(geo_data)+
+  tm_fill('incidencia.media3',
+    breaks = quebras,
+    labels = txt,
+    palette=rev(viridis(10)),
+    as.count = TRUE
+  ) +
+  tm_borders(
+    col='black',
+    alpha=0.2
+  )+
+  tm_scale_bar()+
+  tm_layout(
+    title='2015 a 2018',
+    title.position = c('center', 'top'),
+    frame = FALSE,
+    legend.show=FALSE
+  )
+
+tmap_arrange(geo1,geo2,geo3,ncol=3)
+```
+
+## Impacto da cobertura vacinal por municipio
+
+Em 2010 foram inclusas as vacinas meningocócica C e pneumocócica-10-valente no calendário vacinal gerando um impacto na incidência das meningites no Estado que pode ser percebida no gráfico XXXX. Para avaliar o impacto dessa medida, fez-se uma análise de séries temporais, dividindo os municípios em três grupos: antes da inclusão das vacinas (de 2007 a 2010), após a inclusão da vacina (2011 a 2014) e após 4 anos de vacinação (2015 a 2018). O desfecho analisado foi a incidência quadrienal de meningites por município a cada 100.000 habitantes. A amostra foi submetida à análise de normalidade pelo teste Shapiro-Wilk, demonstrando ausência de normalidade. As incidências foram pareadas por município e comparados pelo Teste Wilcoxon pareado não-paramétrico bicaldal.
+
+```{r incidencia.boxplot}
+View(incidencia.por.municipio)
+ 
+incidencia.dados.plot = incidencia.por.municipio %>%
+  select(ID_MN_RESI, quadri1, quadri2, quadri3)
+
+#mutate(
+  #  diff1 = quadri1 - quadri2,
+  #  diff2 = quadri1 - quadri3
+  #) %>%
+  #pivot_longer(cols = 2:4, names_to='ano', values_to = 'incidencia')
+ #mutate(
+#   ano = as.numeric(substr(ano, 2, 5)),
+#   grupo = ifelse(ano <= 2010, 'A', 'B')
+# )
+
+#wilcox.test(incidencia.dados.plot$quadri1, incidencia.dados.plot$quadri2)
+#wilcox.test(incidencia.dados.plot$quadri1, incidencia.dados.plot$quadri3)
+#wilcox.test(incidencia.dados.plot$quadri2, incidencia.dados.plot$quadri3)
+
+summary(incidencia.dados.plot)
+
+friedman.test(
+  incidencia.dados.plot %>%
+    select(quadri1, quadri2, quadri3) %>%
+    as.matrix()
+  )
+
+
+data = incidencia.dados.plot %>% 
+  pivot_longer(cols = 2:4, names_to='grupo', values_to = 'incidencia')
+
+tst = data %>% wilcox_test(
+  incidencia ~ grupo,
+  paired = TRUE,
+  p.adjust.method = "bonferroni"
+)
+
+#ggplot(incidencia.dados.plot) +
+
+#shapiro.test(incidencia.dados.plot$quadri1)
+#shapiro.test(incidencia.dados.plot$quadri2)
+#shapiro.test(incidencia.dados.plot$quadri3)
+
+ggplot(data, aes(x=grupo, y=incidencia, fill=grupo)) + 
+  geom_boxplot(
+    outlier.size = 1,
+    outlier.shape = 1
+  ) +
+  scale_y_continuous(
+    name = "Taxa de incidência quadrienal / município",
+    limits = c(0, 40)
+  ) +
+  theme_classic() + 
+  scale_x_discrete(
+    name = '',
+    labels = c('2007 a 2010', '2011 a 2014', '2015 a 2018')
+  ) + 
+  scale_fill_viridis_d()
+  
+```
+
+
+```{r cobertura.aprofundado}
+
+vacina.por.municipio = incidencia.por.municipio %>%
+  select(ID_MN_RESI,29:41) %>%
+  gather(key='ano', value = 'Incidencia', -ID_MN_RESI) %>%
+  mutate(ano = as.numeric(substr(ano, 2, 5))) %>%
+  rename(cod = ID_MN_RESI) %>%
+  filter(ano %in% c(2007, 2011, 2015, 2019)) 
+  #mutate(match = paste(as.character(ID_MN_RESI), as.character(ano), sep='|')) %>%
+  #select(match, incidencia)
+
+View(vacina.por.municipio)
+
+vacina.menin <- read.csv('./dados/cobertura_meningo.csv',
+  header=TRUE,
+  sep=';',
+  encoding='UTF-8'
+  ) %>%
+  mutate(cod = factor(substr(municipio, 0, 6))) %>%
+  select(-municipio) %>%
+  gather(key='ano', value = 'cobertura', -cod) %>%
+  mutate(ano = as.numeric(substr(ano, 2, 5))) %>%
+  merge(vacina.por.municipio, by = c('cod', 'ano'))
+
+vacina.menin.2007 <- vacina.menin %>% filter(ano == 2007)
+vacina.menin.2011 <- vacina.menin %>% filter(ano == 2011)
+vacina.menin.2015 <- vacina.menin %>% filter(ano == 2015)
+vacina.menin.2019 <- vacina.menin %>% filter(ano == 2019)
+
+imunizacao.mapa.1 = shp_pi %>%
+  select(cod, geometry) %>%
+  merge(vacina.menin.2007, by='cod')
+
+imunizacao.mapa.2 = shp_pi %>%
+  select(cod, geometry) %>%
+  merge(vacina.menin.2011, by='cod')
+
+imunizacao.mapa.3 = shp_pi %>%
+  select(cod, geometry) %>%
+  merge(vacina.menin.2015, by='cod')
+
+imunizacao.mapa.4 = shp_pi %>%
+  select(cod, geometry) %>%
+  merge(vacina.menin.2019, by='cod')
+  
+
+paleta.violeta = c('#ffffff','#f3c3fe','#da4bfd','#a502ce','#750192','#440154')
+vacina.breaks = c(0, 65, 95, 100, Inf)
+#  select(cod, ano, cobertura, incidencia) %>%
+#  replace_na(list(casos = 0)) %>%
+#  arrange(cod, ano) %>%
+#  filter(ano != 2019) %>%
+#  mutate(divisao = ano %% 3)
+
+g1 = tm_shape(imunizacao.mapa.1)+
+  tm_fill('cobertura',
+    breaks = vacina.breaks,
+    title='Taxa de Cobertura Vacinal',
+    palette= paleta.violeta,
+    as.count = TRUE
+  ) +
+  tm_bubbles(
+    size = 'Incidencia',
+    col='#98ed18',
+    border.col = 'white'
+  ) +
+  tm_legend(legend.format = list(
+    text.separator= 'a',
+    text.or.more = 'ou mais'
+  )) +
+  #tm_legend(position=c("left","top"))+
+  tm_borders(col='black',alpha=0.2) +
+  tm_layout( title = '2007', title.size = 1, frame = FALSE)
+
+g2 = tm_shape(imunizacao.mapa.2)+
+  tm_fill('cobertura',
+    breaks = vacina.breaks,
+    palette= paleta.violeta,
+    as.count = TRUE
+  ) +
+  tm_bubbles(
+    size = 'Incidencia',
+    col='#98ed18',
+    border.col = 'white'
+  ) +
+  tm_borders(col='black',alpha=0.2) +
+  tm_layout( title = '2011', title.size = 1, legend.show = FALSE, frame = FALSE)
+  
+
+g3 = tm_shape(imunizacao.mapa.3)+
+  tm_fill('cobertura',
+    breaks = vacina.breaks,
+    palette= paleta.violeta,
+    as.count = TRUE
+  ) +
+  tm_bubbles(
+    size = 'Incidencia',
+    col='#98ed18',
+    border.col = 'white'
+  ) +
+  tm_borders(col='black',alpha=0.2) +
+  tm_layout( title = '2015', title.size = 1, legend.show = FALSE, frame = FALSE)
+
+g4 = tm_shape(imunizacao.mapa.4)+
+  tm_fill('cobertura',
+    breaks = vacina.breaks,
+    palette= paleta.violeta,
+    as.count = TRUE
+  ) +
+  tm_bubbles(
+    size = 'Incidencia',
+    col='#98ed18',
+    border.col = 'white'
+  ) +
+  tm_scale_bar()+
+  tm_borders(col='black',alpha=0.2) +
+  tm_layout( title = '2019', title.size = 1, legend.show = FALSE, frame = FALSE)
+
+tmap_arrange(g1,g2,g3,g4, ncol=2)
+#library(plotly)
+
+#plot_ly(x=dados.tst$ano, y=dados.tst$incidencia, z=dados.tst$cobertura, type="scatter3d", mode="markers", color=dados.tst$cobertura)
+
+#ggplot(dados.tst, aes(x=cobertura, y=incidencia)) +
+#  geom_point() + 
+#  scale_y_continuous(
+#    limits = c(1, 100)
+#  ) + 
+#  scale_x_continuous(
+#    limits = c(1, 200)
+#  )
+
+
+
+
+```
+
+```{r imunizacao.por.caso}
+
+vacinas.por.caso = main_data %>%
+    select(
+      ANT_AC, #menin
+      ANT_BC, #menin
+      ANT_CONJ_C,
+      ANT_BCG, #BCG
+      ANT_HEMO_T, #hib
+      ANT_PNEUMO
+    ) %>%
+    summary() %>% View()
+
+```
+
+

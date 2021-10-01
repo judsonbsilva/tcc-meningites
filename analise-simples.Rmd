@@ -1,0 +1,606 @@
+---
+title: "Análise dos Dados - Meningites no Piauí"
+author: "Judson Silva"
+date: "28/09/2020"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tibble)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(tmap)
+library(sf)
+library(knitr)
+library(viridis)
+library(stringr)
+```
+
+## Carrega o banco de dados
+
+```{r loadData}
+
+raw_data <- read.csv(
+  './banco_meningites.csv',
+  header=TRUE,
+  encoding='UTF-8'
+)
+
+main_data <- raw_data %>%
+  # Filtra somente os casos confirmados ('1' = confirmado)
+  filter(CLASSI_FIN == '1')
+```
+
+```{r notificacao}
+
+# Pego os dados gerais
+notif.data <- raw_data %>%
+  select(ANO_NOTIF, CLASSI_FIN) %>%
+  # Altera o valor '1' para confirmado e '2' para descartado (apenas para plotar o gráfico)
+  mutate(CLASSI_FIN = recode(CLASSI_FIN, `1` = 'Confirmado', `2` = 'Descartado')) %>%
+  # Agrupa por ano
+  group_by(ANO_NOTIF, CLASSI_FIN) %>%
+  # Soma o total em cada ano
+  summarise(total = n())
+  
+notif.add.data <- notif.data %>%
+    spread(CLASSI_FIN, total) %>%
+    # Adiciona coluna com o total de notificações
+    mutate(Notificado = Confirmado + Descartado) %>%
+    # Calcula a taxa de confirmação
+    mutate(Taxa_Confirmacao = Confirmado/Notificado)
+
+# Mostra tabela com os dados finais de notificação
+kable(notif.add.data, caption='Dados de Notificação das Meningites no PI')
+
+# Retorna o número de notificações do ano com mais casos
+# Esse número será usado para plotar o gráfico, definindo
+# os limites do eixo Y e auxiliando no ajuste da taxa de confirmação
+notif.max <- max(notif.data$total)
+
+# Prepara dados para plotar a taxa de confirmação junto aos outros dados
+notif.ratio <- notif.add.data$Taxa_Confirmacao %>%
+  rep(each = 2) # precisa multiplicar por três porque cada caso tem três estados possíveis (confirmado, descartado e desconhecido)
+notif.ratio <- notif.ratio * notif.max
+
+label.percent <- function(label){
+  paste(label, '%', sep='')
+}
+
+# Plota gráfico com as notificações por ano
+# Adiciona os dados a serem plotados e define as colunas x(ano) e y(total)
+ggplot(notif.data,
+       aes(x = ANO_NOTIF, y = total)) +
+  # Adiciona título
+  ggtitle("Situação dos casos de meningite notificados no Piauí entre 2007 e 2019") +
+  # Adiciona barras com as quantidades por ano (total)
+  geom_bar(
+    aes(fill = CLASSI_FIN),
+    stat = 'identity',
+    position = 'dodge',
+    width = 0.5,
+    colour='black'
+  ) + 
+  # Adiciona as taxas de confirmação de cada ano
+  geom_line(
+    aes(x=ANO_NOTIF, y=notif.ratio),
+    stat="identity",
+    group=1) +
+  geom_point(
+    aes(x=ANO_NOTIF, y=notif.ratio)
+  ) +
+  scale_y_continuous(
+    name ='Número de casos',
+    breaks=seq(0, notif.max, 100),
+    sec.axis = sec_axis(~ ./(notif.max/100),
+      name = 'Taxa de Confirmação',
+      labels = label.percent)
+  ) +
+  scale_x_discrete(name ='') +
+  labs(fill = "Classificação do caso") +
+  theme_classic() + 
+  theme(legend.position='top') +
+  scale_fill_viridis(discrete = TRUE)
+  
+
+```
+
+## Informações da população do estudo
+
+Agora, veremos as características da população do estudo (idade, sexo, raça, perfil de comorbidades, status vacinal e etc)
+
+```{r populacao, echo=T}
+
+# Função para preencher campos vazios com um valor específico
+preenche_campos <- function(data, campos, valor){
+  list_subs <- list()
+  for(field in campos){
+    list_subs[[field]] <- valor
+  }
+  return(replace_na(data,list_subs))
+}
+# Função para resumir dados
+resumo <- function(data, field){
+  select(data,c(field)) %>%
+    group_by_all() %>%
+    summarise(total = n()) %>%
+    mutate(freq = round(100 * total/sum(total), 2))
+}
+
+campos.comorbidades = c(
+  'ANT_AIDS', #HIV
+  'ANT_IMUNO', #Imunocromprometimento
+  'ANT_IRA', #IRA
+  'ANT_TUBE', #Tuberculose
+  'ANT_TRAUMA', #Trauma
+  'ANT_INF_HO' #Infecção hospitalar
+)
+
+main_data <- main_data %>%
+  preenche_campos(
+    c(campos.comorbidades,'CS_RACA', 'ANT_CONT_N', 'ATE_HOSPIT', 'EVOLUCAO'),
+    '9'
+  ) %>%
+  mutate(CS_RACA=recode(CS_RACA,
+    '1' = 'Branca',
+    '2' = 'Preta',
+    '3' = 'Amarela',
+    '4' = 'Parda',
+    '5' = 'Indígena',
+    '9' = 'Desconhecido'
+  )) %>%
+  mutate(ANT_CONT_N = recode(ANT_CONT_N,
+      '1' = 'Domicílio',
+      '2' = 'Vizinhança',
+      '3' = 'Trabalho',
+      '4' = 'Creche ou escola',
+      '5' = 'Posto de Saúde/Hospital',
+      '6' = 'Outros Estado/Município',
+      '7' = 'Sem história de contato',
+      '8' = 'Outro país',
+      '9' = 'Desconhecido'
+  )) %>%
+  mutate(EVOLUCAO = recode(EVOLUCAO, 
+      '1' = 'Alta',
+      '2' = 'Óbito por meningite',
+      '3' = 'Óbito por outra causa',
+      '9' = 'Desconhecido'
+  ))
+  
+
+pop.info <- tribble(
+  ~Variavel, ~Valor,
+  'Idade média', mean(main_data$IDADE, na.rm=TRUE),
+  'Idade sd', sd(main_data$IDADE, na.rm=TRUE),
+  'Faixa etária', resumo(main_data, 'FAIXA.ETARIA'),
+  'Sexo', resumo(main_data, 'CS_SEXO'),
+  'Etnia', resumo(main_data, 'CS_RACA'),
+  'Comorbidades', '',
+  'HIV', resumo(main_data,'ANT_AIDS'),
+  'IRA', resumo(main_data,'ANT_IRA'),
+  'Tuberculose', resumo(main_data,'ANT_TUBE'),
+  'Trauma', resumo(main_data,'ANT_TRAUMA'),
+  'Infecção Hospitalar', resumo(main_data,'ANT_INF_HO'),
+  'Contato prévio', resumo(main_data, 'ANT_CONT_N'),
+  'Hospitalização', resumo(main_data, 'ATE_HOSPIT'),
+  'Evolução', resumo(main_data, 'EVOLUCAO')
+)
+
+for(i in 1:nrow(pop.info)){
+  print(pop.info[[1]][i])
+  print(pop.info[[2]][i])
+}
+
+```
+
+## Critérios de confirmação
+
+Verifica quais os critérios utilizados para fazer a confirmação dos casos
+
+```{r criterios}
+
+criterios.classifier <- function(crit.data){
+  case_when(
+    crit.data == '1' ~ 'Cultura',
+    crit.data == '2' ~ 'CIE',
+    crit.data == '3' ~ 'Ag. Látex',
+    crit.data == '4' ~ 'Clínico',
+    crit.data == '5' ~ 'Bacterioscopia',
+    crit.data == '6' ~ 'Quimiocitológico',
+    crit.data == '7' ~ 'Clínico Epidemiológico',
+    crit.data == '8' ~ 'Isolamento Viral',
+    crit.data == '9' ~ 'PCR',
+    crit.data == '10' ~ 'Outros',
+    is.na(crit.data) ~ 'Outros'
+  )
+}
+
+criterios.info <- function(data){
+  temp <- data %>%
+    select(CLASSI_FIN, 
+       #Critério para confirmação (ver 'criterios.csv')
+       CRITERIO
+    ) %>%
+    # Pega os casos confirmados
+    filter(CLASSI_FIN == '1') %>%
+    # Altera o nome do critério
+    mutate(criterio_confirmacao = criterios.classifier(CRITERIO)) %>%
+    group_by(criterio_confirmacao) %>%
+    summarise(total = n()) %>%
+    # Calcula a frequência relativa
+    mutate(freq = round((total / sum(total))*100,2))
+}
+
+criterios.data <- criterios.info(raw_data)
+
+kable(criterios.data, caption='Critérios de confirmação das meningites')
+
+```
+
+
+# Punção liquor
+
+```{r puncao, echo=TRUE}
+
+puncao.list = list(
+  '1' = 'Límpido',
+  '2' = 'Purulento',
+  '3' = 'Hemorrágico',
+  '4' = 'Turvo',
+  '5' = 'Xantocrômico',
+  '6' = 'Outro',
+  '9' = 'Ignorado'
+)
+
+main_data %>%
+  replace_na(list(
+    LAB_PUNCAO = '9'
+  )) %>%
+  group_by(LAB_PUNCAO) %>%
+  summarise(casos = n()) %>%
+  kable(caption='Quantos fizeram punção')
+
+puncao = main_data %>%
+  filter(LAB_PUNCAO == '1') %>%
+  replace_na(list('LAB_ASPECT' = '9')) %>%
+  mutate(LAB_ASPECT = recode(LAB_ASPECT, !!!puncao.list)) %>%
+  group_by(LAB_ASPECT) %>%
+  summarise(casos = n())
+
+kable(puncao, caption = "Aspectos do Liquor")
+
+#  mutate(liquor = recode())
+#1- Límpido
+#2- Purulento
+#3- Hemorrágico
+#4- Turvo
+#5- Xantocrômico
+#6- Outro
+#9. Ignorado
+
+```
+
+## Classificação etiológica
+
+```{r etiologia}
+
+eti.list = c('9' = 'Shigella sp', '10' = 'Staphylococcus (aureus, sp, epidermidis)', '11' = 'Salmonella sp', '12' = 'Escherichia coli', '13' = 'Klebsiella (sp, pneumoniae)', '14' = 'Streptococcus (sp, pyogenes, agalactiae)', '15' = 'Enterococcus', '16' = 'Pseudomonas (aeruginosa, sp)', '18' = 'Serratia (marcescens, sp)', '19' = 'Alcaligenes (sp, faecalis)', '20' = 'Proteus (sp, vulgaris, mirabilis)', '21' = 'Listeria monocytogenes', '22' = 'Enterobacter (sp, cloacae)', '23' = 'Acinetobacter (sp, baumannii)', '26' = 'Neisseria sp', '28' = 'Outras Bactérias', '37' = 'Caxumba', '38' = 'Sarampo', '39' = 'Herpes simples', '40' = 'Varicela-Zóster', '41' = 'Rubéola', '42' = 'Outros fungos', '43' = 'Cryptococcus sp', '44' = 'Candida (albicans sp)', '45' = 'Treponema Pallidum', '46' = 'Rickettsiae', '47' = 'Tripanossoma cruzi', '48' = 'Toxoplasma (Gondii, sp)', '49' = 'Leptospira', '50' = 'Cisticerco', '52' = 'Outros Parasitas', '55' = 'Influenza', '56' = 'Echovirus', '59' = 'Outros Enterovirus', '63' = 'Coxasackie', '64' = 'Aspergillus sp', '70' = 'Adenovirus', '71' = 'Virus do Nilo Ocidental', '72' = 'Dengue', '73' = 'Outros Arbovirus', '74' = 'Outros vírus', '75' = 'Não identificado', '76' = 'Plasmodium sp', '77' = 'Taenia Solium', '81' = 'Bactéria não especificada')
+
+eti.list.bac <- c('01', '02', '03', '04', '05', '09', '10')
+eti.list.fung <- c(42,43,44,64) # Outros fungos, Cryptococcus sp, Candida (albicans sp), Aspergillus
+eti.list.vir <-  c(37,38,39,40,41,55,56,59,63,70,71,72,73,74) 
+
+eti.sorter <- function(eti.class, eti.code){
+  case_when(
+    eti.class %in% eti.list.bac ~ 'Bacteriana',
+    eti.code %in% eti.list.vir ~ 'Viral',
+    eti.code %in% eti.list.fung ~ 'Fúngica',
+    eti.class == '08' | eti.code != 75  ~ 'Outras etiologias',
+    TRUE ~ 'Não especificada'
+  )
+}
+
+eti.nominator <- function(eti.class, eti.code, eti.class2){
+  case_when(
+    # Bacterianas
+    eti.class %in% c('01','02','03') ~ 'Neisseria meningitidis',
+    eti.class == '04' ~ 'Mycobacterium tuberculosis',
+    eti.class == '09' ~ 'Hamophilus influenza',
+    eti.class == '10' ~ 'Streptococcus pneumoniae',
+    eti.code %in% c(28,42,52, 73, 74,75,81) ~ 'Não identificado', #Outras Bactérias, Outros fungos, Outros parasitas, Outros Arbovirus, Outros virus, Não identificado, Bactéria não especificada 
+    TRUE ~ eti.list[as.character(eti.code)]
+  )
+}
+
+eti.name <- function(eti.data){
+  return(sapply(eti.data, function(x){
+    as.factor(eti.list[as.character(x)])
+  }))
+}
+# Função para converter 'factors' em números
+as.numeric.factor <- function(x) {as.numeric(levels(x))[x]}
+
+eti.data <- main_data %>%
+  select(CLASSI_FIN, CON_DIAGES, CLA_ME_BAC, CLA_ME_ASS, CLA_ME_ETI, CLA_SOROGR, LAB_ASPECT) %>%
+  # Pega os casos confirmados
+  filter(CLASSI_FIN == '1') %>%
+  # Transforma as colunas de fatores em números (para serem agrupados)
+  mutate(
+    CLA_ME_BAC = as.numeric.factor(CLA_ME_BAC),
+    CLA_ME_ASS = as.numeric.factor(CLA_ME_ASS),
+    CLA_ME_ETI = as.numeric.factor(CLA_ME_ETI)
+  ) %>%
+  # Faz a junção entre as três colunas (retornando apenas a que não está vazia) para deixar uma única etiologia em cada caso
+  mutate(cod_etiologia = coalesce(CLA_ME_BAC, CLA_ME_ASS, CLA_ME_ETI)) %>%
+  # Preenche colunas vazias
+  replace_na(list(
+    'CON_DIAGES' = '06', # Meningite não especificada)
+    'cod_etiologia' = 75 # Não identificado
+  )) %>%
+  # Inicia a nova classificação
+  mutate(class_etiologia = eti.sorter(CON_DIAGES, cod_etiologia)) %>%
+  mutate(nome_etiologia = eti.nominator(CON_DIAGES, cod_etiologia, class_etiologia)) %>%
+  mutate(asseptica = if_else(CON_DIAGES == '07', TRUE, FALSE)) 
+
+eti.data.table <- eti.data %>%
+  group_by(nome_etiologia) %>%
+  summarise(total = n())
+
+eti.data %>% group_by(class_etiologia) %>% summarise(total = n()) %>% View()
+
+View(eti.data.table)
+
+kable(eti.data.table, caption="Agentes etiológicos dos casos de meningite notificados no Piauí entre 2007 e 2019")
+```
+
+
+## Relação etiologia puncao
+
+```{r}
+
+eti.data %>%
+  mutate(LAB_ASPECT = recode(LAB_ASPECT, !!!puncao.list)) %>%
+  group_by(class_etiologia, LAB_ASPECT) %>%
+  summarise(casos = n()) %>%
+  View()
+
+```
+
+## Geolocalização
+
+```{r geoloc}
+
+# Pega o shapefile do piauí e adiciona coluna 'ID_MN_RESI'
+shp_pi <- st_read("./geoloc/ibge2013/22MUE250GC_SIR.shp")
+shp_pi <- shp_pi %>%
+    # Pega código dos municípios do IBGE sem o último dígito
+    mutate(ID_MN_RESI = factor(substr(CD_GEOCMU, 0, 6)))
+
+geo_data <- main_data %>%
+  group_by(ID_MN_RESI) %>%
+  summarise(total = n())
+
+pop_data <- pop.info.municip <- read.csv('./dados/populacao_municipios_pi.csv',
+                             header=TRUE,
+                             sep=';',
+                             encoding='UTF-8',
+                             ) %>%
+  mutate(ID_MN_RESI = factor(substr(MUNICIPIO, 0, 6))) %>%
+  mutate(NOME_MN = str_sub(MUNICIPIO, start=8)) %>%
+  mutate(POP=as.numeric(X2013)) %>%
+  select(15:17)
+
+# Junta os dados com os dados geográficos
+geo_data <- left_join(x=shp_pi, y=geo_data, by="ID_MN_RESI") %>%
+    replace_na(list('total' = 0))
+
+geo_data <- left_join(x=geo_data, y=pop_data, by="ID_MN_RESI")
+
+View(geo_data)
+
+tm_shape(geo_data)+
+  tm_fill("total",
+    title='Número de casos',
+    #style='pretty',
+    breaks= c(0,0, 20, 200, 700, 2000, Inf),
+    palette=rev(viridis(9)),
+    as.count = TRUE
+  ) +
+  tm_legend(position=c("left","top"))+
+  tm_scale_bar()+
+  tm_borders(alpha=.5)+
+  tm_legend(legend.format = list(
+    text.separator= 'a',
+    text.or.more = 'ou mais'
+  ))
+
+```
+
+## Mortalidade
+
+```{r morte}
+
+morte.ano = main_data %>%
+  filter(EVOLUCAO == '2') %>%
+  group_by(ANO_NOTIF) %>% 
+  summarise(mortes = n())
+
+casos.ano = main_data %>%
+  group_by(ANO_NOTIF) %>%
+  summarise(casos = n())
+
+View(morte.ano)
+
+pop.pi = c(3130768, 3153248, 3173620, 3192643, 3203635, 3213393, 3221407, 3229320, 3238459, 3246999, 3255400, 3264531, 3273227)
+
+
+morte.dados <- left_join(x=morte.ano, y=casos.ano, by='ANO_NOTIF') %>%
+  mutate(populacao = pop.pi) %>%
+  mutate(taxa.mortalidade = round(mortes * 100000/populacao, 2)) %>%
+  mutate(taxa.letalidade = round(mortes * 100/casos, 2))
+
+#View(morte.dados)
+morte.dados %>% summary()
+
+
+taxa <- 2/25
+
+ggplot(morte.dados, aes(
+  x=ANO_NOTIF,
+  y=taxa.mortalidade,
+  color='Taxa de Mortalidade'
+)) +
+  geom_line(aes(
+      x=ANO_NOTIF,
+      y=taxa.mortalidade,
+      group = 1
+  )) +
+  scale_y_continuous(
+    name ='Taxa de mortalidade a cada 100.000 habitantes',
+    limits = c(0,2),
+    sec.axis = sec_axis(~ ./taxa,
+      name = 'Taxa de Letalidade',
+      labels = label.percent
+    )
+  ) +
+  scale_x_discrete(name='') + 
+  labs(title='') + 
+  geom_line(
+    aes(
+      x=ANO_NOTIF,
+      y=taxa.letalidade * taxa,
+      group = 1,
+      color='Taxa de Letalidade'
+    ),
+    stat = 'identity',
+    alpha = 0.8
+  ) +
+  theme_classic() + 
+  scale_color_viridis_d() +
+  theme(
+    legend.title=element_blank(),
+    legend.position = 'bottom'
+  )
+```
+
+
+## Informações Clínicas
+
+As informações clínicas disponíveis são: Abaluamento de Fontanela, Cefaleia, Vômito, Coma, Convulsão, Febre, Sinais Meningorradiculares, Petéquias, Rigidez de Nuca.
+
+
+```{r dados clinicos}
+
+# A primeira linha contém os nomes dos campos
+cli.sinais = c('CLI_ABAULA','CLI_CEFALE', 'CLI_VOMITO',
+'CLI_COMA', 'CLI_CONVUL', 'CLI_FEBRE',
+'CLI_KERNIG', 'CLI_PETEQU', 'CLI_RIGIDE')
+
+# A segunda linha contém os respectivos significados
+cli.names = c('Abaluamento de Fontanela', 'Cefaleia',
+                'Vômito', 'Coma', 'Convulsão', 'Febre',
+                'Sinais Meningorradiculares','Petéquias',
+                'Rigidez de Nuca')
+
+# Função para pegar os dados clínicos
+cli.info <- function(data){
+  total <- nrow(data)
+  # Pega os achados clínicos
+  temp <- select(data, cli.sinais) %>%
+  # Troca os valores vazios por '9'
+  mutate_if(is.factor, replace_na, replace = '9') %>%
+  #Agrupa os casos por cada sintoma
+  sapply(summary) %>%
+  #Troca linha por coluna
+  t() %>% as_tibble() %>%
+  #Adiciona coluna com os nomes dos sinais
+  mutate(Sinal = cli.names) %>%
+  rename(Presente = '1', Ausente='2', Desconhecido='9') %>%
+  mutate(
+    Presente = round(100*Presente/total,2),
+    Ausente = round(100*Ausente/total,2),
+    Desconhecido= round(100*Desconhecido/total,2)
+  )
+  
+  return(temp)
+}
+
+# Chama a função
+cli.data <- cli.info(main_data)
+
+View(cli.data)
+
+# Mostra frequência absoluta
+kable(cli.data, caption='Frequência Absoluta dos Achados Clínicos')
+
+gather(cli.data,
+       key = "parametro",
+       value = "valor",
+       -Sinal) %>%
+ggplot(aes(
+  x=valor, y=Sinal, fill=parametro)) +
+  # Adiciona título
+  ggtitle("Apresentação Clínica das Meningites no Piauí entre 2007 e 2019") +
+  # Adiciona barras com as quantidades por ano (total)
+  geom_bar(
+    stat = 'identity',
+    width = 0.3,
+    colour = 'black'
+  ) +
+  scale_x_continuous(
+    name = "",
+    n.breaks = 8,
+    label = label.percent
+  ) +
+  scale_y_discrete(
+    name = "Achados Clínicos"
+  ) + 
+  # Adiciona as taxas de confirmação de cada ano
+  labs(fill = "") +
+  theme_classic() + 
+  theme(
+    legend.position="top",
+    axis.line.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.y = element_text(colour='black')
+  ) +
+  scale_fill_viridis(discrete = TRUE)
+
+
+# Transforma a frequência absoluta em relativa  
+#temp2 <- clinical_data$result/clinical_data$total
+# Multiplica por 100 pra melhorar a visualização
+#temp2 <- temp2 * 100
+# Arredonda os valores para 2 dígitos
+#temp2 <- round(temp2, 2)
+  
+# Mostra frequência relativa
+#kable(temp2, caption='Frequência Relativa dos Achados Clínicos')
+
+  
+# Plota o gráfico com resultados
+#par(mai=c(1.3,1.6,1,1))
+#barplot(temp2,
+#        sub="Frequência Relativa dos Achados Clínicos dos Casos Notificados de Meningites no Piauí",
+#        beside=TRUE,
+ #       horiz=TRUE,
+  #      legend.text=rownames(clinical_data$result),
+   #     # Parâmetros do gráfico (PS: não mexer)
+    #    las=2,
+     #   cex.names=0.7,
+      #  cex.axis=0.7,
+       # xlim=c(0,100),
+        #args.legend=list(xjust=1, yjust=0, cex = 0.6))
+
+# Apaga variável temporária
+#rm(temp2)
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

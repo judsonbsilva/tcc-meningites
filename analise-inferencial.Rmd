@@ -1,0 +1,148 @@
+---
+title: "Estatística inferencial"
+output: html_notebook
+---
+
+Estes são os pacotes utilizados no projeto
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(tidyr)
+library(tmap)
+library(sf)
+library(knitr)
+library(viridis)
+library(stringr)
+library(ggplot2)
+library(epiR)
+```
+
+## Carrega o banco de dados
+
+```{r loadData}
+
+raw_data <- read.csv(
+  './banco_meningites.csv',
+  header=TRUE,
+  encoding='UTF-8'
+)
+
+main_data <- raw_data %>%
+  # Filtra somente os casos confirmados ('1' = confirmado)
+  filter(CLASSI_FIN == '1')
+  
+```
+
+# Caso-controle (desfecho: morte, exposição: à pesquisar)
+
+```{r echo=TRUE}
+
+variaveis.interesse = c('FAIXA.ETARIA', 'evo','ANT_AIDS', 'ANT_IRA', 'ANT_TUBE', 'ANT_TRAUMA', 'ANT_INF_HO', 'ANT_AC', 'ANT_BC', 'ANT_CONJ_C', 'ANT_BCG', 'ANT_HEMO_T', 'ANT_PNEUMO', 'CLI_ABAULA', 'CLI_CEFALE', 'CLI_VOMITO', 'CLI_COMA', 'CLI_CONVUL', 'CLI_FEBRE', 'CLI_KERNIG', 'CLI_PETEQU', 'CLI_RIGIDE')
+
+morte.data = main_data %>%
+  filter(EVOLUCAO %in% c('1', '2')) %>%
+  mutate(evo = recode(EVOLUCAO, '1'='alta', '2'='morte')) %>%
+  select(variaveis.interesse)
+
+n.total = nrow(morte.data)
+
+pega.matriz = function(nome){
+  nome = as.symbol(nome)
+  morte.data %>%
+    select(evo, !!nome) %>%
+    filter(
+      !!nome %in% c('1','2')
+    ) %>%
+    group_by(evo, !!nome) %>%
+    summarise(total = n()) %>%
+    spread(evo, total) %>%
+    rev() %>%
+    select(morte, alta) %>%
+    as.matrix()
+}
+
+result = lapply(
+  variaveis.interesse[3:length(variaveis.interesse)], function(val){
+    v = epi.2by2(pega.matriz(val),method='case.control')
+  return(list(
+    'VAR' = val,
+    'VAL' = v$res$OR.crude.score,
+    'N' = v$tab[3,3],
+    'PERDA' = round( ( n.total - as.numeric(v$tab[3,3]) ) * 100 / n.total, 2)
+  ))
+})
+
+lapply(result, print)
+#v = epi.2by2(
+#  pega.matriz('ANT_AIDS'),
+#  method='case.control'
+#)
+#View(v$res$OR.crude.score)
+#ANT_AIDS
+#ANT_IRA
+#ANT_TUBE
+#ANT_TRAUMA
+#ANT_INF_HO
+#ANT_CONT_N
+#ATE_HOSPIT
+
+#CLI_ABAULA
+#CLI_CEFALE
+#CLI_VOMITO
+#CLI_COMA
+#CLI_CONVUL
+#CLI_FEBRE
+#CLI_KERNIG
+#CLI_PETEQU
+#CLI_RIGIDE
+
+#revalue(
+#'1' = 'menos1',
+#'2' = 'de1a4',
+#'3' = 'de5a14',
+#'4' = 'de15a19',
+#'5' = 'de20a39',
+#'6' = 'de40a59',
+#'7' = 'mais60',
+#'8' = 'desconhecido'
+#)
+
+
+```
+
+# História Natural
+
+```{r echo=TRUE}
+
+calc.diff.time = function(dt1, dt2){
+  v = as.numeric(difftime(dt1, dt2, units = 'days'))
+  return(ifelse(dt1 >= dt2, v, -v))
+}
+
+
+dates = main_data %>%
+  select(
+    evo, IDADE, FAIXA.ETARIA,
+    DT_SIN_PRI,
+    DT_NOTIFIC,
+    ATE_INTERN,
+    LAB_DTPUNC,
+    DT_INVEST,
+    MED_DT_EVO,
+    DT_ENCERRA
+  ) %>%
+  mutate(
+    notifi.day = difftime(DT_NOTIFIC, DT_SIN_PRI, units = 'days'),
+    intern.day = difftime(ATE_INTERN, DT_SIN_PRI, units = 'days'),
+    puncao.day = difftime(LAB_DTPUNC, DT_SIN_PRI, units = 'days'),
+    invest.day = difftime(DT_INVEST , DT_SIN_PRI, units = 'days'),
+    evoluc.day = difftime(MED_DT_EVO, DT_SIN_PRI, units = 'days'),
+    encerr.day = difftime(DT_ENCERRA, DT_SIN_PRI, units = 'days')
+  )
+
+summary(dates$notifi.day)
+
+```
+
