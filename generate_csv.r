@@ -61,13 +61,14 @@ raw_data = raw_data %>% select(-one_of(c('NM_MAE_PAC', 'FONETICA_N', 'SOUNDEX', 
 
 # Divisão por faixa etária
 faixa.etaria <- c(
-  'Abaixo de 1 ano',
-  'De 1 e 4 anos',
-  'De 5 a 14 anos',
-  'De 15 a 19 anos',
-  'De 20 a 39 anos',
-  'De 40 a 59 anos',
-  '60 anos ou mais'
+  'Abaixo de 1 ano', #1
+  'De 1 e 4 anos', #2
+  'De 5 a 14 anos', #3
+  'De 15 a 19 anos', #4
+  'De 20 a 39 anos', #5
+  'De 40 a 59 anos', #6
+  '60 anos ou mais' #7
+  #8 é desconhecido
 )
 
 idade.classifier <- function(idade){

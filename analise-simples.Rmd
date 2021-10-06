@@ -3,8 +3,8 @@ title: "Análise dos Dados - Meningites no Piauí"
 author: "Judson Silva"
 date: "28/09/2020"
 output:
-  pdf_document: default
   html_document: default
+  pdf_document: default
   word_document: default
 ---
 
@@ -26,8 +26,10 @@ library(stringr)
 
 ```{r loadData}
 
+# setwd("home/judson/Nuvem/Cientifico/meningites piaui/conducao/tcc-meningites-sinan")
+
 raw_data <- read.csv(
-  './banco_meningites.csv',
+  './dados/banco_meningites.csv',
   header=TRUE,
   encoding='UTF-8'
 )
@@ -142,7 +144,7 @@ campos.comorbidades = c(
   'ANT_INF_HO' #Infecção hospitalar
 )
 
-main_data <- main_data %>%
+local_data <- main_data %>%
   preenche_campos(
     c(campos.comorbidades,'CS_RACA', 'ANT_CONT_N', 'ATE_HOSPIT', 'EVOLUCAO'),
     '9'
@@ -176,25 +178,27 @@ main_data <- main_data %>%
 
 pop.info <- tribble(
   ~Variavel, ~Valor,
-  'Idade média', mean(main_data$IDADE, na.rm=TRUE),
-  'Idade sd', sd(main_data$IDADE, na.rm=TRUE),
-  'Faixa etária', resumo(main_data, 'FAIXA.ETARIA'),
-  'Sexo', resumo(main_data, 'CS_SEXO'),
-  'Etnia', resumo(main_data, 'CS_RACA'),
+  'Idade média', mean(local_data$IDADE, na.rm=TRUE),
+  'Idade sd', sd(local_data$IDADE, na.rm=TRUE),
+  'Faixa etária', resumo(local_data, 'FAIXA.ETARIA'),
+  'Sexo', resumo(local_data, 'CS_SEXO'),
+  'Etnia', resumo(local_data, 'CS_RACA'),
   'Comorbidades', '',
-  'HIV', resumo(main_data,'ANT_AIDS'),
-  'IRA', resumo(main_data,'ANT_IRA'),
-  'Tuberculose', resumo(main_data,'ANT_TUBE'),
-  'Trauma', resumo(main_data,'ANT_TRAUMA'),
-  'Infecção Hospitalar', resumo(main_data,'ANT_INF_HO'),
-  'Contato prévio', resumo(main_data, 'ANT_CONT_N'),
-  'Hospitalização', resumo(main_data, 'ATE_HOSPIT'),
-  'Evolução', resumo(main_data, 'EVOLUCAO')
+  'HIV', resumo(local_data,'ANT_AIDS'),
+  'IRA', resumo(local_data,'ANT_IRA'),
+  'Tuberculose', resumo(local_data,'ANT_TUBE'),
+  'Trauma', resumo(local_data,'ANT_TRAUMA'),
+  'Infecção Hospitalar', resumo(local_data,'ANT_INF_HO'),
+  'Contato prévio', resumo(local_data, 'ANT_CONT_N'),
+  'Hospitalização', resumo(local_data, 'ATE_HOSPIT'),
+  'Evolução', resumo(local_data, 'EVOLUCAO')
 )
 
 for(i in 1:nrow(pop.info)){
-  print(pop.info[[1]][i])
-  print(pop.info[[2]][i])
+  #print(pop.info[[1]][i])
+  #print(pop.info[[2]][i])
+  
+  kable(pop.info[[2]][i])
 }
 
 ```
@@ -327,7 +331,7 @@ eti.name <- function(eti.data){
 as.numeric.factor <- function(x) {as.numeric(levels(x))[x]}
 
 eti.data <- main_data %>%
-  select(CLASSI_FIN, CON_DIAGES, CLA_ME_BAC, CLA_ME_ASS, CLA_ME_ETI, CLA_SOROGR, LAB_ASPECT) %>%
+  #select(CLASSI_FIN, CON_DIAGES, CLA_ME_BAC, CLA_ME_ASS, CLA_ME_ETI, CLA_SOROGR, LAB_ASPECT) %>%
   # Pega os casos confirmados
   filter(CLASSI_FIN == '1') %>%
   # Transforma as colunas de fatores em números (para serem agrupados)
@@ -352,13 +356,111 @@ eti.data.table <- eti.data %>%
   group_by(nome_etiologia) %>%
   summarise(total = n())
 
-eti.data %>% group_by(class_etiologia) %>% summarise(total = n()) %>% View()
-
-View(eti.data.table)
+#eti.data %>% group_by(class_etiologia) %>% summarise(total = n()) %>% View()
 
 kable(eti.data.table, caption="Agentes etiológicos dos casos de meningite notificados no Piauí entre 2007 e 2019")
 ```
 
+
+```{r explicacaoPico}
+
+View(eti.data)
+
+pico.grupo.nome = '2007 a 2010';
+
+pico.data = eti.data %>%
+  # Seleciona as variáveis de interesse
+  select(ANO_NOTIF, ID_MN_RESI, FAIXA.ETARIA, IDADE, class_etiologia) %>%
+  # Transforma os inteiros em fatores
+  mutate(
+    FAIXA.ETARIA = as.factor(FAIXA.ETARIA),
+    ID_MN_RESI = as.factor(ID_MN_RESI)
+  ) %>%
+  # Define dois grupos, A(2007 a 2010) e B (2011 a 2019) 
+  mutate(GRUPO = ifelse(ANO_NOTIF < 2011, pico.grupo.nome, '2011 a 2019'))
+
+# Divide as faixas etárias do período
+pico.plot.1 = pico.data %>% group_by(GRUPO, FAIXA.ETARIA) %>% summarise(total = n())
+View(pico.plot.1)
+# Divide os municípios nos dois períodos
+pico.plot.2 = pico.data %>%
+  group_by(GRUPO, ID_MN_RESI) %>%
+  summarise(total = n()) %>%
+  spread(GRUPO, total) %>%
+  replace(is.na(.), 0) %>%
+  rename(a='2007 a 2010', b='2011 a 2019') %>%
+  # Calcula a distancia quadrada (DQ)
+  mutate(dif= (a-b)^2) %>%
+  # Seleciona apenas queles municípios em que a diferença é maior que 4 casos (DQ >= 16)
+  filter(dif >= 25) %>%
+  select(ID_MN_RESI, a, b) %>%
+  gather(a, b, key='GRUPO', value='total')
+
+View(pico.plot.2)
+# Legendas do gráfico 
+pico.labels = c(
+      "< 1 ano", #1
+      " 1-4 anos", #2
+      " 5-14 anos", #3
+      "15-19 anos", #4
+      "20-39 anos", #5
+      "40-59 anos", #6
+      "≥ 60 anos", #7
+      "Desconhecido" #8
+)
+
+# Divisão entre os grupos
+pico.data.A = filter(pico.data, GRUPO == pico.grupo.nome)
+pico.data.B = filter(pico.data, GRUPO != pico.grupo.nome)
+
+# Cálculo da mediana e intervalo interquartil
+pico.data.A$IDADE %>% median(na.rm = T)
+pico.data.A$IDADE %>% IQR(na.rm=T)
+pico.data.B$IDADE %>% median(na.rm = T)
+pico.data.B$IDADE %>% IQR(na.rm = T)
+# Teste estatístico, apesar do nome wilcox esse é o MANN WHITNEY
+wilcox.test(IDADE ~ GRUPO, data=pico.data)
+
+# Histograma das faixas etárias nos dois períodos
+ggplot(data=pico.plot.1, aes(x=FAIXA.ETARIA, y=total, fill=GRUPO))+
+  geom_bar(
+    stat="identity",
+    position=position_dodge(),
+    width = 0.5,
+    colour='black'
+  ) + 
+  labs(fill = "") +
+  theme_classic() + 
+  theme(
+    legend.position='bottom',
+    axis.text.x = element_text(
+      color="#000000",
+      size=10
+    )
+  ) +
+  scale_y_continuous(name = 'Frequência') +
+  scale_x_discrete(
+    name = '',
+    labels = pico.labels
+  ) +
+  scale_fill_viridis(discrete = TRUE)
+
+
+ggplot(data=pico.plot.2, aes(x=ID_MN_RESI, y=total, fill=GRUPO))+
+  geom_bar(
+    stat="identity",
+    position=position_dodge(),
+    width = 0.8
+  ) + theme_classic() + 
+  theme(
+    legend.position='bottom',
+    axis.text.x = element_text(
+      color="#000000",
+      size=10,
+      angle=90
+    )
+  )
+```
 
 ## Relação etiologia puncao
 
@@ -377,12 +479,13 @@ eti.data %>%
 ```{r geoloc}
 
 # Pega o shapefile do piauí e adiciona coluna 'ID_MN_RESI'
-shp_pi <- st_read("./geoloc/ibge2013/22MUE250GC_SIR.shp")
+shp_pi <- st_read("./dados/malha_pi.shp")
 shp_pi <- shp_pi %>%
     # Pega código dos municípios do IBGE sem o último dígito
     mutate(ID_MN_RESI = factor(substr(CD_GEOCMU, 0, 6)))
 
 geo_data <- main_data %>%
+  mutate(ID_MN_RESI = as.factor(ID_MN_RESI)) %>%
   group_by(ID_MN_RESI) %>%
   summarise(total = n())
 
@@ -435,19 +538,18 @@ casos.ano = main_data %>%
   group_by(ANO_NOTIF) %>%
   summarise(casos = n())
 
-View(morte.ano)
-
 pop.pi = c(3130768, 3153248, 3173620, 3192643, 3203635, 3213393, 3221407, 3229320, 3238459, 3246999, 3255400, 3264531, 3273227)
 
+View(morte.ano)
+View(casos.ano)
 
 morte.dados <- left_join(x=morte.ano, y=casos.ano, by='ANO_NOTIF') %>%
   mutate(populacao = pop.pi) %>%
   mutate(taxa.mortalidade = round(mortes * 100000/populacao, 2)) %>%
   mutate(taxa.letalidade = round(mortes * 100/casos, 2))
 
-#View(morte.dados)
+View(morte.dados)
 morte.dados %>% summary()
-
 
 taxa <- 2/25
 
@@ -495,7 +597,7 @@ ggplot(morte.dados, aes(
 As informações clínicas disponíveis são: Abaluamento de Fontanela, Cefaleia, Vômito, Coma, Convulsão, Febre, Sinais Meningorradiculares, Petéquias, Rigidez de Nuca.
 
 
-```{r dados clinicos}
+```{r dadosClinicos}
 
 # A primeira linha contém os nomes dos campos
 cli.sinais = c('CLI_ABAULA','CLI_CEFALE', 'CLI_VOMITO',
@@ -508,13 +610,13 @@ cli.names = c('Abaluamento de Fontanela', 'Cefaleia',
                 'Sinais Meningorradiculares','Petéquias',
                 'Rigidez de Nuca')
 
-# Função para pegar os dados clínicos
-cli.info <- function(data){
-  total <- nrow(data)
-  # Pega os achados clínicos
-  temp <- select(data, cli.sinais) %>%
-  # Troca os valores vazios por '9'
-  mutate_if(is.factor, replace_na, replace = '9') %>%
+
+cli.data = main_data %>%
+  select(cli.sinais) %>%
+  # Transforma os valores em fatores
+  mutate_all(~as.factor(.)) %>%
+  #Substitui valores vazios por 9
+  replace(is.na(.), "9") %>%
   #Agrupa os casos por cada sintoma
   sapply(summary) %>%
   #Troca linha por coluna
@@ -522,22 +624,15 @@ cli.info <- function(data){
   #Adiciona coluna com os nomes dos sinais
   mutate(Sinal = cli.names) %>%
   rename(Presente = '1', Ausente='2', Desconhecido='9') %>%
+  #Transforma valores absolutos em relativos
   mutate(
-    Presente = round(100*Presente/total,2),
-    Ausente = round(100*Ausente/total,2),
-    Desconhecido= round(100*Desconhecido/total,2)
+    Presente = round(100*Presente/nrow(main_data),2),
+    Ausente = round(100*Ausente/nrow(main_data),2),
+    Desconhecido= round(100*Desconhecido/nrow(main_data),2)
   )
-  
-  return(temp)
-}
-
-# Chama a função
-cli.data <- cli.info(main_data)
-
-View(cli.data)
 
 # Mostra frequência absoluta
-kable(cli.data, caption='Frequência Absoluta dos Achados Clínicos')
+kable(cli.data, caption='Frequência dos Achados Clínicos')
 
 gather(cli.data,
        key = "parametro",
@@ -571,6 +666,105 @@ ggplot(aes(
     axis.text.y = element_text(colour='black')
   ) +
   scale_fill_viridis(discrete = TRUE)
+
+# Busca de modelos mais frequentes (combinação de sintomas)
+rules = main_data %>%
+  select(
+    #FAIXA.ETARIA, CS_SEXO
+    #ANT_AIDS, ANT_IRA, ANT_TUBE, ANT_TRAUMA, ANT_CONT_N, ATE_HOSPIT, EVOLUCAO,
+    CLI_ABAULA, CLI_CEFALE, CLI_VOMITO, CLI_COMA, CLI_CONVUL, CLI_FEBRE, CLI_KERNIG, CLI_PETEQU, CLI_RIGIDE) %>%
+  #filter(FAIXA.ETARIA != '8') %>%
+  #filter_at(vars(-FAIXA.ETARIA), all_vars(. != '9')) %>%
+  filter_all(all_vars(. != '9')) %>%
+  mutate_all(as.factor) %>%
+  #mutate_all(funs(recode(., '2' = '0'))) %>%
+  #mutate_all(as.integer) %>%
+  apriori(parameter = list(
+    supp = 0.4,
+    target = "maximally frequent itemsets"
+  )) %>%
+  head(20, by="support")
+
+# Avaliar os 20 modelos mais frequentes
+inspect(rules)
+# Os mais achados foram:
+# 1. Cefaleia, febre, vomito
+# 2. Cefaleia, febre, rigidez
+# 3. Cefaleia, febre
+
+# Agora é hora de testar os modelos nos dados reais
+cli.test.1 = main_data %>%
+  select(cli.sinais, FAIXA.ETARIA, CS_SEXO, IDADE, ANO_NOTIF) %>%
+  filter_at(vars(CLI_CEFALE, CLI_VOMITO, CLI_FEBRE), all_vars(. == 1)) %>%
+  nrow()
+# 71,82%
+cli.test.2 = main_data %>%
+  select(cli.sinais, FAIXA.ETARIA, CS_SEXO, IDADE, ANO_NOTIF) %>%
+  filter_at(vars(CLI_CEFALE, CLI_RIGIDE, CLI_FEBRE), all_vars(. == 1)) %>%
+  nrow()
+# 43,8%
+cli.test.3 = main_data %>%
+  select(cli.sinais, FAIXA.ETARIA, CS_SEXO, IDADE, ANO_NOTIF) %>%
+  filter_at(vars(CLI_CEFALE, CLI_FEBRE), all_vars(. == 1)) %>%
+  filter_at(vars(CLI_VOMITO, CLI_RIGIDE), any_vars(. == 1)) %>%
+  nrow()
+# 78%
+
+# Avaliar os achados clínicos nas diferentes faixas etárias
+cli.data.2 = main_data %>%
+  select(cli.sinais, FAIXA.ETARIA) %>%
+  # Transforma os valores em fatores
+  mutate_all(~as.factor(.)) %>%
+  #Substitui valores vazios por 9
+  replace(is.na(.), "9") %>%
+  #Adiciona nova variável
+  filter(FAIXA.ETARIA != '8') %>%
+  # Agrupa as faixas etarias
+  mutate(GRUPO = case_when(
+    FAIXA.ETARIA == '1' ~ 'bebe',
+    FAIXA.ETARIA %in% c('2','3') ~ 'crianca-adolescente',
+    FAIXA.ETARIA %in% c('4', '5', '6') ~ 'adulto',
+    FAIXA.ETARIA == '7' ~ 'idoso'
+  )) %>%
+  select(cli.sinais, GRUPO) %>%
+  gather(!!!cli.sinais, key='sinal', value='valor')
+
+View(cli.data.2)
+
+cli.data.2 = cli.data.2 %>%
+  filter(valor != '9') %>%
+  group_by(GRUPO, sinal, valor) %>%
+  summarise(casos = n())
+
+temp = cli.data.2 %>%
+  group_by(GRUPO, sinal) %>%
+  summarise(total = sum(casos))
+
+cli.data.2 = cli.data.2 %>%
+  filter(valor == '1') %>%
+  left_join(temp, by=c('GRUPO', 'sinal')) %>%
+  mutate(freq = round(casos/total * 100, 2))
+
+View(cli.data.2)
+View(cli.data.3)
+
+ggplot(data=cli.data.2, aes(x=sinal, y=freq, fill=GRUPO)) +
+  geom_bar(
+    stat="identity",
+    position=position_dodge(),
+    width = 0.8
+  ) + 
+  labs(fill = "") +
+  theme_classic() + 
+  theme(
+    legend.position='bottom',
+    axis.text.x = element_text(
+      color="#000000",
+      size=10,
+      angle=90
+    )
+  ) +
+  scale_y_continuous(name = 'Frequência')
 
 
 # Transforma a frequência absoluta em relativa  
